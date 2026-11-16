@@ -235,9 +235,13 @@ class ReadMatrixTest(unittest.TestCase):
 
 class ChooseModeTest(unittest.TestCase):
     def test_retries_until_valid(self):
-        choice, output = run_quietly(main.choose_mode, fake_input(["3", "", " 2 "]))
+        choice, output = run_quietly(main.choose_mode, fake_input(["4", "", " 2 "]))
         self.assertEqual(choice, "2")
-        self.assertEqual(output.count("1 또는 2를 입력하세요"), 2)
+        self.assertEqual(output.count("1, 2, 3 중 하나를 입력하세요"), 2)
+
+    def test_generator_mode_is_selectable(self):
+        choice, _ = run_quietly(main.choose_mode, fake_input(["3"]))
+        self.assertEqual(choice, "3")
 
 
 class UserModeTest(unittest.TestCase):
@@ -495,6 +499,62 @@ class SummaryTest(unittest.TestCase):
             self.assertIn(text, output)
 
 
+class FlatOptimizationTest(unittest.TestCase):
+    def test_flatten_is_row_major(self):
+        m = main.Matrix.from_rows([[1, 2], [3, 4]])
+        flat = m.flatten()
+        self.assertEqual(flat, [1.0, 2.0, 3.0, 4.0])
+        for r in range(2):
+            for c in range(2):
+                self.assertEqual(flat[r * 2 + c], m.get(r, c))
+
+    def test_mac_flat_matches_mac_bit_for_bit(self):
+        # data.json의 동점 케이스처럼 부동소수점 오차가 있는 경우도 완전히 같은 값이어야 한다.
+        data, _ = main.load_json(main.DEFAULT_DATA_PATH)
+        filters, _ = main.load_filters(data["filters"])
+        for key, entry in data["patterns"].items():
+            pattern = main.Matrix.from_rows(entry["input"])
+            for label in (main.CROSS, main.X):
+                with self.subTest(case=key, filter=label):
+                    filt = filters[pattern.n][label]
+                    self.assertEqual(
+                        repr(main.mac(pattern, filt)),
+                        repr(main.mac_flat(pattern.flatten(), filt.flatten())),
+                    )
+
+    def test_mac_flat_length_mismatch(self):
+        with self.assertRaises(ValueError):
+            main.mac_flat([1.0] * 9, [1.0] * 25)
+
+    def test_measure_comparison_rows(self):
+        rows = main.measure_comparison((3, 5), repeat=2)
+        self.assertEqual([r[0] for r in rows], [3, 5])
+        for _, ms_2d, ms_1d, ms_convert in rows:
+            self.assertGreaterEqual(ms_2d, 0)
+            self.assertGreaterEqual(ms_1d, 0)
+            self.assertGreaterEqual(ms_convert, 0)
+        _, output = run_quietly(main.print_comparison_table, rows)
+        for text in ("2D(ms)", "1D(ms)", "속도 향상", "같은 입력·같은 반복 횟수"):
+            self.assertIn(text, output)
+
+
+class GeneratorModeTest(unittest.TestCase):
+    def test_read_size_retries(self):
+        n, output = run_quietly(main.read_size, fake_input(["2", "abc", "100", "", "7"]))
+        self.assertEqual(n, 7)
+        self.assertEqual(output.count("범위 오류"), 2)
+        self.assertEqual(output.count("입력 형식 오류"), 2)
+
+    def test_generated_patterns_pass_for_various_sizes(self):
+        for n in (3, 4, 25, 51):
+            with self.subTest(n=n):
+                results, output = run_quietly(main.run_generator_mode, fake_input([str(n)]))
+                self.assertEqual(results, [True, True])
+                self.assertIn("{0}×{0}".format(n), output)
+                if n > main.GENERATOR_PRINT_MAX:
+                    self.assertIn("출력을 생략", output)
+
+
 class MainTest(unittest.TestCase):
     def run_main(self, argv, lines):
         from unittest import mock
@@ -517,6 +577,11 @@ class MainTest(unittest.TestCase):
         code, output = self.run_main([], lines)
         self.assertEqual(code, 0)
         self.assertIn("판정: A", output)
+
+    def test_mode3_via_main(self):
+        code, output = self.run_main([], ["3", "5"])
+        self.assertEqual(code, 0)
+        self.assertIn("generated_x_5", output)
 
     def test_eof_exits_cleanly(self):
         code, output = self.run_main([], [])
