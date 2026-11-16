@@ -271,5 +271,173 @@ class MeasureTest(unittest.TestCase):
         self.assertGreaterEqual(avg, 0.0)
 
 
+PROJECT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+ERROR_CASES_PATH = os.path.join(PROJECT_DIR, "samples", "error_cases.json")
+
+
+class LoadJsonTest(unittest.TestCase):
+    def _write(self, text):
+        import tempfile
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        handle.write(text)
+        handle.close()
+        self.addCleanup(os.remove, handle.name)
+        return handle.name
+
+    def test_valid_file(self):
+        data, error = main.load_json(main.DEFAULT_DATA_PATH)
+        self.assertIsNone(error)
+        self.assertIn("patterns", data)
+
+    def test_missing_file(self):
+        data, error = main.load_json("does_not_exist.json")
+        self.assertIsNone(data)
+        self.assertIn("찾을 수 없습니다", error)
+
+    def test_syntax_error(self):
+        data, error = main.load_json(self._write('{"a": 1,'))
+        self.assertIsNone(data)
+        self.assertIn("JSON 문법 오류", error)
+
+    def test_top_level_not_object(self):
+        data, error = main.load_json(self._write("[1, 2]"))
+        self.assertIsNone(data)
+        self.assertIn("객체", error)
+
+
+class LoadFiltersTest(unittest.TestCase):
+    def test_data_json_filters(self):
+        data, _ = main.load_json(main.DEFAULT_DATA_PATH)
+        filters, logs = main.load_filters(data["filters"])
+        self.assertEqual(sorted(filters), [5, 13, 25])
+        self.assertTrue(all(ok for ok, _, _ in logs))
+        for n, pair in filters.items():
+            self.assertEqual(set(pair), {main.CROSS, main.X})  # 키 정규화
+            self.assertEqual(pair[main.CROSS].n, n)
+
+    def test_invalid_filters_are_skipped_with_reason(self):
+        section = {
+            "size_3": {"cross": cross_rows(3), "o": x_rows(3)},   # 알 수 없는 키, X 없음
+            "size_4": {"cross": cross_rows(4), "x": x_rows(3)},   # 크기 불일치
+            "size_5": {"x": x_rows(5), "X": x_rows(5)},           # 중복, Cross 없음
+            "big": {"cross": cross_rows(3), "x": x_rows(3)},      # 키 형식
+            "size_6": [1, 2],                                     # 객체 아님
+        }
+        filters, logs = main.load_filters(section)
+        self.assertEqual(filters, {})
+        reasons = {key: message for ok, key, message in logs if not ok}
+        self.assertIn("알 수 없는 필터 키", reasons["size_3"])
+        self.assertIn("크기 불일치", reasons["size_4"])
+        self.assertIn("중복", reasons["size_5"])
+        self.assertIn("Cross 필터 없음", reasons["size_5"])
+        self.assertIn("키 형식 오류", reasons["big"])
+        self.assertIn("객체가 아닙니다", reasons["size_6"])
+
+    def test_missing_section(self):
+        filters, logs = main.load_filters(None)
+        self.assertEqual(filters, {})
+        self.assertFalse(logs[0][0])
+
+
+class EvaluateCaseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.filters = {5: {main.CROSS: main.Matrix.from_rows(cross_rows(5)),
+                           main.X: main.Matrix.from_rows(x_rows(5))}}
+
+    def evaluate(self, key, entry):
+        return main.evaluate_case(key, entry, self.filters)
+
+    def test_pass(self):
+        result = self.evaluate("size_5_1", {"input": cross_rows(5), "expected": "+"})
+        self.assertTrue(result.passed)
+        self.assertEqual(result.decision, main.CROSS)
+        self.assertEqual((result.score_cross, result.score_x), (9.0, 1.0))
+        self.assertIsNone(result.reason)
+
+    def assertFailCategory(self, key, entry, category):
+        result = self.evaluate(key, entry)
+        self.assertFalse(result.passed)
+        self.assertTrue(result.reason.startswith(category), result.reason)
+        return result
+
+    def test_fail_categories(self):
+        cases = [
+            ("pattern_1", {"input": cross_rows(5), "expected": "+"}, main.REASON_SCHEMA),
+            ("size_5_1", [1, 2], main.REASON_SCHEMA),
+            ("size_5_1", {"input": cross_rows(5)}, main.REASON_SCHEMA),
+            ("size_7_1", {"input": cross_rows(7), "expected": "+"}, main.REASON_SCHEMA),
+            ("size_5_1", {"input": [[0, 1]] * 5, "expected": "+"}, main.REASON_SCHEMA),
+            ("size_5_1", {"input": cross_rows(4), "expected": "+"}, main.REASON_SIZE),
+            ("size_5_1", {"input": cross_rows(5), "expected": "o"}, main.REASON_LABEL),
+            ("size_5_1", {"input": cross_rows(5), "expected": "x"}, main.REASON_MISMATCH),
+        ]
+        for key, entry, category in cases:
+            with self.subTest(key=key, category=category, entry=entry):
+                self.assertFailCategory(key, entry, category)
+
+    def test_tie_fails_with_undecided(self):
+        center = [[1 if (r == 2 and c == 2) else 0 for c in range(5)] for r in range(5)]
+        result = self.assertFailCategory(
+            "size_5_1", {"input": center, "expected": "+"}, main.REASON_TIE
+        )
+        self.assertEqual(result.decision, main.UNDECIDED)
+
+    def test_label_failure_still_reports_scores(self):
+        result = self.evaluate("size_5_1", {"input": cross_rows(5), "expected": "o"})
+        self.assertEqual(result.score_cross, 9.0)
+
+
+class RunJsonModeTest(unittest.TestCase):
+    def test_data_json(self):
+        results, output = run_quietly(main.run_json_mode, main.DEFAULT_DATA_PATH)
+        self.assertEqual(len(results), 6)
+        self.assertEqual(sum(r.passed for r in results), 3)
+        failed = {r.key for r in results if not r.passed}
+        self.assertEqual(failed, {"size_5_1", "size_13_2", "size_25_1"})
+        self.assertTrue(all(r.reason.startswith(main.REASON_TIE) for r in results if not r.passed))
+        self.assertIn("✓ size_25", output)
+
+    def test_error_cases_do_not_stop_program(self):
+        results, output = run_quietly(main.run_json_mode, ERROR_CASES_PATH)
+        self.assertEqual(len(results), 14)
+        self.assertEqual([r.key for r in results if r.passed], ["size_5_1", "size_5_2"])
+        self.assertIn("✗ size_9", output)
+
+    def test_unreadable_file_returns_none(self):
+        result, output = run_quietly(main.run_json_mode, "does_not_exist.json")
+        self.assertIsNone(result)
+        self.assertIn("불러오지 못했습니다", output)
+
+
+class MainTest(unittest.TestCase):
+    def run_main(self, argv, lines):
+        from unittest import mock
+        with mock.patch("builtins.input", fake_input(lines)), \
+                mock.patch.object(main, "configure_output"):
+            return run_quietly(main.main, argv)
+
+    def test_mode2_with_path_argument(self):
+        code, output = self.run_main([ERROR_CASES_PATH], ["2"])
+        self.assertEqual(code, 0)
+        self.assertIn("pattern_1", output)
+
+    def test_mode2_missing_file(self):
+        code, output = self.run_main(["does_not_exist.json"], ["2"])
+        self.assertEqual(code, 1)
+        self.assertIn("불러오지 못했습니다", output)
+
+    def test_mode1_via_main(self):
+        lines = ["1"] + UserModeTest.CROSS_3 + UserModeTest.X_3 + UserModeTest.CROSS_3
+        code, output = self.run_main([], lines)
+        self.assertEqual(code, 0)
+        self.assertIn("판정: A", output)
+
+    def test_eof_exits_cleanly(self):
+        code, output = self.run_main([], [])
+        self.assertEqual(code, 1)
+        self.assertIn("입력이 종료되어", output)
+
+
 if __name__ == "__main__":
     unittest.main()
