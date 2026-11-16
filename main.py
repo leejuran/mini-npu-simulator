@@ -4,7 +4,10 @@ MAC(Multiply-Accumulate) 연산으로 N×N 패턴이 Cross(십자가)인지 X인
 외부 라이브러리 없이 Python 표준 라이브러리만 사용한다.
 """
 
+import json
 import math
+import os
+import re
 import sys
 import time
 import unicodedata
@@ -347,8 +350,81 @@ def run_user_mode(input_fn=input):
 # 모드 2: data.json 분석
 # ============================================================
 
-def run_json_mode():
-    print("data.json 분석 모드는 아직 구현 중입니다. (4단계)")
+DEFAULT_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+
+FILTER_KEY_RE = re.compile(r"^size_(\d+)$")        # filters 키: size_{N}
+PATTERN_KEY_RE = re.compile(r"^size_(\d+)_(\d+)$")  # patterns 키: size_{N}_{idx}
+
+
+def load_json(path):
+    """JSON 파일을 읽어 (data, 오류 메시지)를 돌려준다. 실패해도 예외를 밖으로 내지 않는다."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None, "파일을 찾을 수 없습니다: {}".format(path)
+    except json.JSONDecodeError as error:
+        return None, "JSON 문법 오류 ({}행 {}열): {}".format(error.lineno, error.colno, error.msg)
+    except (OSError, UnicodeDecodeError) as error:
+        return None, "파일을 읽을 수 없습니다: {}".format(error)
+    if not isinstance(data, dict):
+        return None, "최상위 구조가 객체({{...}})가 아닙니다: {}".format(type(data).__name__)
+    return data, None
+
+
+def load_filters(section):
+    """filters 섹션을 검증해 ({N: {Cross: Matrix, X: Matrix}}, 로그 목록)을 돌려준다.
+
+    로그는 (성공 여부, 키, 메시지) 튜플이다. 문제가 있는 크기는 결과에서 빠지고,
+    그 크기의 패턴은 이후 케이스 단위로 FAIL 처리된다.
+    """
+    filters = {}
+    logs = []
+    if not isinstance(section, dict):
+        logs.append((False, "filters", "filters 항목이 없거나 객체가 아닙니다"))
+        return filters, logs
+
+    for key, pair in section.items():
+        match = FILTER_KEY_RE.match(key)
+        if not match:
+            logs.append((False, key, "키 형식 오류 (size_N 형태가 아님)"))
+            continue
+        n = int(match.group(1))
+        if not isinstance(pair, dict):
+            logs.append((False, key, "필터 묶음이 객체가 아닙니다"))
+            continue
+
+        loaded = {}
+        problems = []
+        for raw_label, rows in pair.items():
+            label = normalize_label(raw_label)
+            if label is None:
+                problems.append("알 수 없는 필터 키 '{}'".format(raw_label))
+                continue
+            if label in loaded:
+                problems.append("'{}' 필터가 중복됨 ('{}')".format(label, raw_label))
+                continue
+            try:
+                matrix = Matrix.from_rows(rows)
+            except ValueError as error:
+                problems.append("{} 필터 오류: {}".format(label, error))
+                continue
+            if matrix.n != n:
+                problems.append(
+                    "{} 필터 크기 불일치: 키는 {n}×{n}인데 데이터는 {m}×{m}".format(label, n=n, m=matrix.n)
+                )
+                continue
+            loaded[label] = matrix
+
+        for label in (CROSS, X):
+            if label not in loaded and not any(p.startswith(label + " ") for p in problems):
+                problems.append("{} 필터 없음".format(label))
+        if problems:
+            logs.append((False, key, "; ".join(problems)))
+        else:
+            filters[n] = loaded
+            logs.append((True, key, "필터 로드 완료 (Cross, X)"))
+    return filters, logs
 
 
 # ============================================================
