@@ -87,3 +87,27 @@ class Matrix:
 
     def __repr__(self):
         return "Matrix(n={})".format(self.n)
+
+
+# ============================================================
+# MAC 연산 (Multiply-Accumulate)
+# ============================================================
+
+def mac(pattern, filt):
+    """패턴과 필터를 같은 위치끼리 곱하고(Multiply) 모두 더한(Accumulate) 점수를 반환한다.
+
+    벡터화 라이브러리 없이 이중 반복문으로 N×N번 곱셈과 덧셈을 수행한다.
+    따라서 연산 횟수는 N², 시간 복잡도는 O(N²)이다.
+    """
+    if pattern.n != filt.n:
+        raise ValueError(
+            "크기 불일치: 패턴 {0}×{0}, 필터 {1}×{1}".format(pattern.n, filt.n)
+        )
+    n = pattern.n
+    a = pattern.cells
+    b = filt.cells
+    total = 0.0
+    for i in range(n):
+        for j in range(n):
+            total += a[i][j] * b[i][j]
+    return total
