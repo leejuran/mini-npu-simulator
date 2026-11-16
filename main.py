@@ -15,6 +15,9 @@ CROSS = "Cross"
 X = "X"
 UNDECIDED = "UNDECIDED"
 
+# 점수 비교 허용오차: |A - B| < EPSILON 이면 동점(UNDECIDED)으로 본다.
+EPSILON = 1e-9
+
 
 # ============================================================
 # 데이터 구조: N×N 행렬
@@ -142,3 +145,24 @@ def normalize_label(raw):
     if not isinstance(raw, str):
         return None
     return _LABEL_ALIASES.get(raw.strip().lower())
+
+
+# ============================================================
+# 판정 (허용오차 기반 비교)
+# ============================================================
+
+def is_tie(score_a, score_b, epsilon=EPSILON):
+    """두 점수의 차이가 허용오차보다 작으면 동점으로 본다."""
+    return abs(score_a - score_b) < epsilon
+
+
+def judge(score_a, score_b, label_a, label_b, epsilon=EPSILON):
+    """두 점수를 비교해 더 높은 쪽 라벨을 반환한다. 동점이면 UNDECIDED.
+
+    부동소수점은 0.1 + 0.2 != 0.3 처럼 미세한 오차가 생긴다.
+    단순히 '>'로 비교하면 사실상 같은 점수에서도 한쪽이 이긴 것처럼 판정되므로,
+    차이가 epsilon보다 작으면 판정하지 않는다.
+    """
+    if is_tie(score_a, score_b, epsilon):
+        return UNDECIDED
+    return label_a if score_a > score_b else label_b
