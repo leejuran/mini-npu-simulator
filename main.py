@@ -106,6 +106,13 @@ class Matrix:
         """내부 데이터의 복사본을 2차원 리스트로 돌려준다."""
         return [row[:] for row in self._cells]
 
+    def flatten(self):
+        """행 우선(row-major) 순서의 1차원 리스트(길이 N²)로 돌려준다.
+
+        (row, col) 위치는 1차원에서 row * N + col 인덱스가 된다.
+        """
+        return [value for row in self._cells for value in row]
+
     def __repr__(self):
         return "Matrix(n={})".format(self.n)
 
@@ -131,6 +138,22 @@ def mac(pattern, filt):
     for i in range(n):
         for j in range(n):
             total += a[i][j] * b[i][j]
+    return total
+
+
+def mac_flat(a, b):
+    """[보너스 최적화] 1차원 리스트(길이 N²) 두 개의 MAC.
+
+    2차원 버전은 매번 a[i][j]처럼 '행 찾기 → 열 찾기' 두 번 인덱싱하고
+    반복문도 두 겹이다. 1차원으로 펼치면 반복문 한 겹, 인덱싱 한 번으로 줄어든다.
+    행 우선 순서로 펼쳤으므로 더하는 순서가 2차원 버전과 같아 결과도 비트 단위로 같다.
+    연산 횟수는 그대로 N²이므로 시간 복잡도는 여전히 O(N²)이고, 상수 비용만 줄어든다.
+    """
+    if len(a) != len(b):
+        raise ValueError("길이 불일치: {} vs {}".format(len(a), len(b)))
+    total = 0.0
+    for k in range(len(a)):
+        total += a[k] * b[k]
     return total
 
 
@@ -306,13 +329,56 @@ def measure_performance(sizes=PERF_SIZES, filters=None, repeat=REPEAT):
     생성기로 만든 Cross 필터를 쓴다. 패턴은 생성기로 만든 십자가 패턴이다.
     값이 아니라 크기가 연산량을 정하므로 어떤 입력이든 N² 번 곱셈·덧셈을 한다.
     """
-    filters = filters or {}
+    return [(n, ms_2d) for n, ms_2d, _, _ in measure_comparison(sizes, filters, repeat, flat=False)]
+
+
+def _perf_inputs(n, filters):
+    pattern = generate_cross(n)
+    filt = (filters or {}).get(n, {}).get(CROSS) or generate_cross(n)
+    return pattern, filt
+
+
+def measure_comparison(sizes=PERF_SIZES, filters=None, repeat=REPEAT, flat=True):
+    """[보너스] 같은 입력·같은 반복 횟수로 2차원 MAC과 1차원 MAC을 비교한다.
+
+    결과: [(n, 2D 평균 ms, 1D 평균 ms, 1차원 변환 평균 ms), ...]
+    변환(flatten)은 필터를 한 번 펼쳐 두고 재사용하는 전처리이므로 MAC 시간과 따로 잰다.
+    flat=False면 2차원만 잰다 (1D 관련 값은 None).
+    """
     rows = []
     for n in sizes:
-        pattern = generate_cross(n)
-        filt = filters.get(n, {}).get(CROSS) or generate_cross(n)
-        rows.append((n, measure_average_ms(lambda: mac(pattern, filt), repeat)))
+        pattern, filt = _perf_inputs(n, filters)
+        ms_2d = measure_average_ms(lambda: mac(pattern, filt), repeat)
+        if not flat:
+            rows.append((n, ms_2d, None, None))
+            continue
+        flat_pattern, flat_filter = pattern.flatten(), filt.flatten()
+        ms_1d = measure_average_ms(lambda: mac_flat(flat_pattern, flat_filter), repeat)
+        ms_convert = measure_average_ms(lambda: (pattern.flatten(), filt.flatten()), repeat)
+        rows.append((n, ms_2d, ms_1d, ms_convert))
     return rows
+
+
+def print_comparison_table(rows):
+    """[보너스] 최적화 전(2D)/후(1D) 성능 비교 표."""
+    print(
+        pad("크기", 10)
+        + pad("2D(ms)", 12, right=True)
+        + pad("1D(ms)", 12, right=True)
+        + pad("속도 향상", 12, right=True)
+        + pad("변환(ms)", 12, right=True)
+    )
+    print("-" * 58)
+    for n, ms_2d, ms_1d, ms_convert in rows:
+        speedup = ms_2d / ms_1d if ms_1d else float("inf")
+        print(
+            pad("{0}×{0}".format(n), 10)
+            + pad("{:.6f}".format(ms_2d), 12, right=True)
+            + pad("{:.6f}".format(ms_1d), 12, right=True)
+            + pad("{:.2f}배".format(speedup), 12, right=True)
+            + pad("{:.6f}".format(ms_convert), 12, right=True)
+        )
+    print("※ 같은 입력·같은 반복 횟수({}회). 변환(ms)은 2차원→1차원 펼치기 1회 비용(전처리, MAC 시간에 미포함)".format(REPEAT))
 
 
 # ============================================================
@@ -643,7 +709,11 @@ def run_json_mode(path=DEFAULT_DATA_PATH):
     results = analyze_patterns(data.get("patterns"), filters)
 
     print_section("[3] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
-    print_performance_table(measure_performance(PERF_SIZES, filters))
+    comparison = measure_comparison(PERF_SIZES, filters)
+    print_performance_table([(n, ms_2d) for n, ms_2d, _, _ in comparison])
+    print()
+    print("[보너스] 메모리 접근 최적화: 2차원 → 1차원 배열")
+    print_comparison_table(comparison)
 
     print_section("[4] 결과 요약")
     print_summary(results)
