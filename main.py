@@ -721,21 +721,85 @@ def run_json_mode(path=DEFAULT_DATA_PATH):
 
 
 # ============================================================
+# 모드 3: 패턴 생성기 (보너스)
+# ============================================================
+
+GENERATOR_MIN = 3
+GENERATOR_MAX = 99
+GENERATOR_PRINT_MAX = 25  # 이보다 크면 패턴 출력은 생략 (연산은 수행)
+
+
+def read_size(input_fn=None):
+    """패턴 크기 N을 입력받는다. 범위 밖이거나 정수가 아니면 다시 입력받는다."""
+    input_fn = input_fn or input
+    while True:
+        text = input_fn("크기 N ({}~{}): ".format(GENERATOR_MIN, GENERATOR_MAX)).strip()
+        try:
+            n = int(text)
+        except ValueError:
+            print("  입력 형식 오류: 정수를 입력하세요.")
+            continue
+        if GENERATOR_MIN <= n <= GENERATOR_MAX:
+            return n
+        print("  범위 오류: {}~{} 사이의 정수를 입력하세요.".format(GENERATOR_MIN, GENERATOR_MAX))
+
+
+def run_generator_mode(input_fn=None):
+    """크기 N을 받아 Cross/X 패턴을 자동 생성하고, 판정과 성능 분석에 재활용한다."""
+    print_section("[1] 크기 입력")
+    n = read_size(input_fn)
+
+    cross = generate_cross(n)
+    x = generate_x(n)
+
+    print_section("[2] 생성된 패턴 ({0}×{0})".format(n))
+    if n <= GENERATOR_PRINT_MAX:
+        print("Cross")
+        print_matrix(cross)
+        print("X")
+        print_matrix(x)
+    else:
+        print("({}×{}는 출력을 생략합니다. 연산은 그대로 수행합니다.)".format(n, n))
+
+    # 생성된 두 패턴을 필터로도 써서 서로를 판정한다 (모드 1·2와 같은 mac/judge 사용)
+    print_section("[3] MAC 판정 (필터: 생성된 Cross / X)")
+    results = []
+    for name, pattern, expected in (("cross", cross, CROSS), ("x", x, X)):
+        score_cross = mac(pattern, cross)
+        score_x = mac(pattern, x)
+        decision = judge(score_cross, score_x, CROSS, X)
+        passed = decision == expected
+        results.append(passed)
+        print("--- generated_{}_{} ---".format(name, n))
+        print("Cross 점수: {}".format(format_score(score_cross)))
+        print("X 점수: {}".format(format_score(score_x)))
+        print("판정: {} | expected: {} | {}".format(decision, expected, "PASS" if passed else "FAIL"))
+
+    print_section("[4] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
+    comparison = measure_comparison((n,), {n: {CROSS: cross}})
+    print_performance_table([(size, ms_2d) for size, ms_2d, _, _ in comparison])
+    print()
+    print_comparison_table(comparison)
+    return results
+
+
+# ============================================================
 # 메뉴 / 진입점
 # ============================================================
 
 def choose_mode(input_fn=None):
-    """모드를 선택받는다. 1 또는 2가 아니면 다시 입력받는다."""
+    """모드를 선택받는다. 1~3이 아니면 다시 입력받는다."""
     input_fn = input_fn or input
     print()
     print("[모드 선택]")
     print("1. 사용자 입력 (3x3)")
     print("2. data.json 분석")
+    print("3. 패턴 생성기 (보너스)")
     while True:
         choice = input_fn("선택: ").strip()
-        if choice in ("1", "2"):
+        if choice in ("1", "2", "3"):
             return choice
-        print("  1 또는 2를 입력하세요.")
+        print("  1, 2, 3 중 하나를 입력하세요.")
 
 
 def configure_output():
@@ -755,8 +819,11 @@ def main(argv=None):
 
     print("=== Mini NPU Simulator ===")
     try:
-        if choose_mode() == "1":
+        choice = choose_mode()
+        if choice == "1":
             run_user_mode()
+        elif choice == "3":
+            run_generator_mode()
         elif run_json_mode(data_path) is None:
             return 1
     except (EOFError, KeyboardInterrupt):
