@@ -102,5 +102,84 @@ class MacTest(unittest.TestCase):
             main.mac(main.Matrix(3), main.Matrix(5))
 
 
+class NormalizeLabelTest(unittest.TestCase):
+    def test_expected_values(self):
+        self.assertEqual(main.normalize_label("+"), main.CROSS)
+        self.assertEqual(main.normalize_label("x"), main.X)
+
+    def test_filter_keys(self):
+        self.assertEqual(main.normalize_label("cross"), main.CROSS)
+        self.assertEqual(main.normalize_label("x"), main.X)
+
+    def test_case_and_whitespace_insensitive(self):
+        for raw in ("Cross", "CROSS", " cross "):
+            self.assertEqual(main.normalize_label(raw), main.CROSS)
+        for raw in ("X", " x "):
+            self.assertEqual(main.normalize_label(raw), main.X)
+
+    def test_unknown_values(self):
+        for raw in ("o", "", "plus", None, 1, ["x"]):
+            with self.subTest(raw=raw):
+                self.assertIsNone(main.normalize_label(raw))
+
+
+class JudgeTest(unittest.TestCase):
+    def test_clear_winner(self):
+        self.assertEqual(main.judge(5.0, 1.0, "A", "B"), "A")
+        self.assertEqual(main.judge(1.0, 5.0, "A", "B"), "B")
+
+    def test_exact_tie(self):
+        self.assertEqual(main.judge(1.0, 1.0, "A", "B"), main.UNDECIDED)
+
+    def test_floating_point_tie(self):
+        # 0.1 + 0.2 = 0.30000000000000004 이므로 '>'만 쓰면 A가 이긴다.
+        self.assertTrue(0.1 + 0.2 > 0.3)
+        self.assertEqual(main.judge(0.1 + 0.2, 0.3, "A", "B"), main.UNDECIDED)
+
+    def test_epsilon_boundary(self):
+        self.assertEqual(main.judge(1.0, 1.0 + 1e-10, "A", "B"), main.UNDECIDED)
+        self.assertEqual(main.judge(1.0, 1.0 + 1e-8, "A", "B"), "B")
+
+
+class DataJsonScoreTest(unittest.TestCase):
+    """제공된 data.json의 점수가 예상대로 계산·판정되는지 확인한다."""
+
+    # case -> (판정, expected)
+    EXPECTED = {
+        "size_5_1": (main.UNDECIDED, main.X),
+        "size_5_2": (main.CROSS, main.CROSS),
+        "size_13_1": (main.X, main.X),
+        "size_13_2": (main.UNDECIDED, main.CROSS),
+        "size_25_1": (main.UNDECIDED, main.X),
+        "size_25_2": (main.CROSS, main.CROSS),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data.json")
+        with open(path, encoding="utf-8") as f:
+            cls.data = json.load(f)
+
+    def test_judgements(self):
+        filters = {
+            key: {main.normalize_label(label): main.Matrix.from_rows(rows)
+                  for label, rows in pair.items()}
+            for key, pair in self.data["filters"].items()
+        }
+        for key, (want_decision, want_expected) in self.EXPECTED.items():
+            with self.subTest(case=key):
+                entry = self.data["patterns"][key]
+                n = int(key.split("_")[1])
+                pattern = main.Matrix.from_rows(entry["input"])
+                pair = filters["size_{}".format(n)]
+                score_cross = main.mac(pattern, pair[main.CROSS])
+                score_x = main.mac(pattern, pair[main.X])
+                self.assertEqual(
+                    main.judge(score_cross, score_x, main.CROSS, main.X), want_decision
+                )
+                self.assertEqual(main.normalize_label(entry["expected"]), want_expected)
+
+
 if __name__ == "__main__":
     unittest.main()
