@@ -249,16 +249,70 @@ def measure_average_ms(func, repeat=REPEAT):
     return total / repeat * 1000.0
 
 
+PERF_SIZES = (3, 5, 13, 25)
+
+
 def print_performance_table(rows):
-    """rows: (n, 평균 ms) 목록. 크기 / 평균 시간 / 연산 횟수(N²) 표를 출력한다."""
-    print(pad("크기", 10) + pad("평균 시간(ms)", 16, right=True) + pad("연산 횟수(N²)", 16, right=True))
-    print("-" * 42)
+    """rows: (n, 평균 ms) 목록.
+
+    크기 / 평균 시간(ms) / 연산 횟수(N²) / 연산 1회당 시간(ns)을 출력한다.
+    마지막 열이 크기와 무관하게 비슷하면 시간이 N²에 비례한다는 근거가 된다.
+    """
+    print(
+        pad("크기", 10)
+        + pad("평균 시간(ms)", 16, right=True)
+        + pad("연산 횟수(N²)", 16, right=True)
+        + pad("연산당(ns)", 14, right=True)
+    )
+    print("-" * 56)
     for n, avg_ms in rows:
+        per_op_ns = avg_ms * 1e6 / (n * n)
         print(
             pad("{0}×{0}".format(n), 10)
             + pad("{:.6f}".format(avg_ms), 16, right=True)
             + pad(str(n * n), 16, right=True)
+            + pad("{:.1f}".format(per_op_ns), 14, right=True)
         )
+
+
+# ============================================================
+# 패턴 생성기
+# ============================================================
+
+def generate_cross(n):
+    """N×N 십자가 패턴: 가운데 행과 가운데 열이 1. (짝수 N은 가운데 두 줄)"""
+    centers = {(n - 1) // 2, n // 2}
+    matrix = Matrix(n)
+    for r in range(n):
+        for c in range(n):
+            if r in centers or c in centers:
+                matrix.set(r, c, 1)
+    return matrix
+
+
+def generate_x(n):
+    """N×N X 패턴: 두 대각선이 1."""
+    matrix = Matrix(n)
+    for i in range(n):
+        matrix.set(i, i, 1)
+        matrix.set(i, n - 1 - i, 1)
+    return matrix
+
+
+def measure_performance(sizes=PERF_SIZES, filters=None, repeat=REPEAT):
+    """크기별 MAC 1회 평균 시간(ms)을 잰다. 결과: [(n, 평균 ms), ...]
+
+    필터는 data.json에서 불러온 Cross 필터가 있으면 그것을, 없으면(예: 3×3)
+    생성기로 만든 Cross 필터를 쓴다. 패턴은 생성기로 만든 십자가 패턴이다.
+    값이 아니라 크기가 연산량을 정하므로 어떤 입력이든 N² 번 곱셈·덧셈을 한다.
+    """
+    filters = filters or {}
+    rows = []
+    for n in sizes:
+        pattern = generate_cross(n)
+        filt = filters.get(n, {}).get(CROSS) or generate_cross(n)
+        rows.append((n, measure_average_ms(lambda: mac(pattern, filt), repeat)))
+    return rows
 
 
 # ============================================================
@@ -540,6 +594,38 @@ def analyze_patterns(section, filters):
     return results
 
 
+def summarize(results):
+    """결과 목록에서 (총, 통과, 실패, 사유 범주별 건수)를 계산한다."""
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+    categories = {}
+    for r in results:
+        if not r.passed:
+            category = r.reason.split(" ", 1)[0] if r.reason else REASON_ERROR
+            categories[category] = categories.get(category, 0) + 1
+    return total, passed, total - passed, categories
+
+
+def print_summary(results):
+    total, passed, failed, categories = summarize(results)
+    print("총 테스트: {}개".format(total))
+    print("통과: {}개".format(passed))
+    print("실패: {}개".format(failed))
+    if not failed:
+        print()
+        print("실패 케이스 없음")
+        return
+    print()
+    print("실패 원인 분류: " + ", ".join(
+        "{} {}건".format(category, count) for category, count in categories.items()
+    ))
+    print()
+    print("실패 케이스:")
+    for r in results:
+        if not r.passed:
+            print("- {}: {}".format(r.key, r.reason))
+
+
 def run_json_mode(path=DEFAULT_DATA_PATH):
     """data.json 분석: 필터 로드 → 패턴 분석. 결과 목록을 돌려주고, 파일을 못 읽으면 None."""
     print("데이터 파일: {}".format(path))
@@ -554,7 +640,14 @@ def run_json_mode(path=DEFAULT_DATA_PATH):
         print("{} {} {}".format("✓" if ok else "✗", pad(key, 8), message))
 
     print_section("[2] 패턴 분석 (라벨 정규화 적용)")
-    return analyze_patterns(data.get("patterns"), filters)
+    results = analyze_patterns(data.get("patterns"), filters)
+
+    print_section("[3] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
+    print_performance_table(measure_performance(PERF_SIZES, filters))
+
+    print_section("[4] 결과 요약")
+    print_summary(results)
+    return results
 
 
 # ============================================================
