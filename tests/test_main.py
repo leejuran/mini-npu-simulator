@@ -410,6 +410,91 @@ class RunJsonModeTest(unittest.TestCase):
         self.assertIn("불러오지 못했습니다", output)
 
 
+class GeneratorTest(unittest.TestCase):
+    def test_odd_sizes_match_reference(self):
+        for n in (3, 5, 13, 25):
+            with self.subTest(n=n):
+                self.assertEqual(main.generate_cross(n).to_rows(), cross_rows(n))
+                self.assertEqual(main.generate_x(n).to_rows(), x_rows(n))
+
+    def test_even_size(self):
+        cross4 = main.generate_cross(4)
+        x4 = main.generate_x(4)
+        self.assertEqual(sum(map(sum, cross4.to_rows())), 12)  # 가운데 두 줄
+        self.assertEqual(sum(map(sum, x4.to_rows())), 8)       # 대각선 2개, 겹침 없음
+
+    def test_generated_patterns_are_judged_correctly(self):
+        for n in (3, 5, 13, 25):
+            cross, x = main.generate_cross(n), main.generate_x(n)
+            self.assertEqual(
+                main.judge(main.mac(cross, cross), main.mac(cross, x), main.CROSS, main.X),
+                main.CROSS,
+            )
+            self.assertEqual(
+                main.judge(main.mac(x, cross), main.mac(x, x), main.CROSS, main.X),
+                main.X,
+            )
+
+
+class PerformanceTest(unittest.TestCase):
+    def test_all_required_sizes_measured(self):
+        rows = main.measure_performance()
+        self.assertEqual([n for n, _ in rows], [3, 5, 13, 25])
+        self.assertTrue(all(ms >= 0 for _, ms in rows))
+
+    def test_uses_loaded_filter_when_available(self):
+        calls = []
+        original = main.mac
+
+        def spy(pattern, filt):
+            calls.append(filt)
+            return original(pattern, filt)
+
+        special = main.generate_x(5)
+        from unittest import mock
+        with mock.patch.object(main, "mac", spy):
+            main.measure_performance((5,), {5: {main.CROSS: special}}, repeat=2)
+        self.assertTrue(all(f is special for f in calls))
+
+    def test_table_has_required_columns(self):
+        _, output = run_quietly(main.print_performance_table, [(3, 0.001), (25, 0.02)])
+        for text in ("크기", "평균 시간(ms)", "연산 횟수(N²)", "3×3", "25×25", "625"):
+            self.assertIn(text, output)
+
+
+class SummaryTest(unittest.TestCase):
+    def make(self, key, passed, reason=None):
+        result = main.CaseResult(key)
+        result.passed = passed
+        result.reason = reason
+        return result
+
+    def test_counts_and_failure_list(self):
+        results = [
+            self.make("a", True),
+            self.make("b", False, "[동점] tie"),
+            self.make("c", False, "[스키마] bad"),
+            self.make("d", False, "[동점] tie"),
+        ]
+        total, passed, failed, categories = main.summarize(results)
+        self.assertEqual((total, passed, failed), (4, 1, 3))
+        self.assertEqual(categories, {"[동점]": 2, "[스키마]": 1})
+        _, output = run_quietly(main.print_summary, results)
+        self.assertIn("총 테스트: 4개", output)
+        self.assertIn("- c: [스키마] bad", output)
+
+    def test_no_failures(self):
+        _, output = run_quietly(main.print_summary, [self.make("a", True)])
+        self.assertIn("실패: 0개", output)
+        self.assertIn("실패 케이스 없음", output)
+
+    def test_data_json_summary_output(self):
+        _, output = run_quietly(main.run_json_mode, main.DEFAULT_DATA_PATH)
+        self.assertLess(output.index("[3] 성능 분석"), output.index("[4] 결과 요약"))
+        for text in ("총 테스트: 6개", "통과: 3개", "실패: 3개", "- size_13_2: [동점]", "13×13"):
+            self.assertIn(text, output)
+
+
 class MainTest(unittest.TestCase):
     def run_main(self, argv, lines):
         from unittest import mock
