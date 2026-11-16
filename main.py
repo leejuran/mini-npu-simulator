@@ -336,3 +336,56 @@ def run_user_mode(input_fn=input):
     print_section("[5] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
     print_performance_table([(n, single_ms)])
     return decision
+
+
+# ============================================================
+# 모드 2: data.json 분석
+# ============================================================
+
+def run_json_mode():
+    print("data.json 분석 모드는 아직 구현 중입니다. (4단계)")
+
+
+# ============================================================
+# 메뉴 / 진입점
+# ============================================================
+
+def choose_mode(input_fn=input):
+    """모드를 선택받는다. 1 또는 2가 아니면 다시 입력받는다."""
+    print()
+    print("[모드 선택]")
+    print("1. 사용자 입력 (3x3)")
+    print("2. data.json 분석")
+    while True:
+        choice = input_fn("선택: ").strip()
+        if choice in ("1", "2"):
+            return choice
+        print("  1 또는 2를 입력하세요.")
+
+
+def configure_output():
+    """Windows 콘솔·파이프에서도 한글이 깨지지 않도록 출력 인코딩을 UTF-8로 맞춘다."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def main():
+    configure_output()
+    print("=== Mini NPU Simulator ===")
+    try:
+        if choose_mode() == "1":
+            run_user_mode()
+        else:
+            run_json_mode()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("입력이 종료되어 프로그램을 마칩니다.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
