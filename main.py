@@ -520,6 +520,41 @@ def print_case(result):
         print("  사유: {}".format(result.reason))
 
 
+def analyze_patterns(section, filters):
+    """patterns 섹션의 모든 케이스를 판정한다. 한 케이스의 오류가 전체를 멈추지 않는다."""
+    results = []
+    if not isinstance(section, dict):
+        print("patterns 항목이 없거나 객체가 아닙니다. 분석할 케이스가 없습니다.")
+        return results
+    for key, entry in section.items():
+        try:
+            result = evaluate_case(key, entry, filters)
+        except Exception as error:  # 예상하지 못한 오류도 케이스 단위 FAIL로 처리
+            result = CaseResult(key).fail(
+                REASON_ERROR, "{}: {}".format(type(error).__name__, error)
+            )
+        print_case(result)
+        results.append(result)
+    return results
+
+
+def run_json_mode(path=DEFAULT_DATA_PATH):
+    """data.json 분석: 필터 로드 → 패턴 분석. 결과 목록을 돌려주고, 파일을 못 읽으면 None."""
+    print("데이터 파일: {}".format(path))
+    data, error = load_json(path)
+    if error:
+        print("✗ 데이터를 불러오지 못했습니다: {}".format(error))
+        return None
+
+    print_section("[1] 필터 로드")
+    filters, logs = load_filters(data.get("filters"))
+    for ok, key, message in logs:
+        print("{} {} {}".format("✓" if ok else "✗", pad(key, 8), message))
+
+    print_section("[2] 패턴 분석 (라벨 정규화 적용)")
+    return analyze_patterns(data.get("patterns"), filters)
+
+
 # ============================================================
 # 메뉴 / 진입점
 # ============================================================
@@ -546,14 +581,18 @@ def configure_output():
             pass
 
 
-def main():
+def main(argv=None):
+    """사용법: python main.py [데이터 파일 경로]  (기본값: main.py 옆의 data.json)"""
     configure_output()
+    argv = sys.argv[1:] if argv is None else argv
+    data_path = argv[0] if argv else DEFAULT_DATA_PATH
+
     print("=== Mini NPU Simulator ===")
     try:
         if choose_mode() == "1":
             run_user_mode()
-        else:
-            run_json_mode()
+        elif run_json_mode(data_path) is None:
+            return 1
     except (EOFError, KeyboardInterrupt):
         print()
         print("입력이 종료되어 프로그램을 마칩니다.")
