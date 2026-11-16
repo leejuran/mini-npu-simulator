@@ -594,6 +594,38 @@ def analyze_patterns(section, filters):
     return results
 
 
+def summarize(results):
+    """결과 목록에서 (총, 통과, 실패, 사유 범주별 건수)를 계산한다."""
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+    categories = {}
+    for r in results:
+        if not r.passed:
+            category = r.reason.split(" ", 1)[0] if r.reason else REASON_ERROR
+            categories[category] = categories.get(category, 0) + 1
+    return total, passed, total - passed, categories
+
+
+def print_summary(results):
+    total, passed, failed, categories = summarize(results)
+    print("총 테스트: {}개".format(total))
+    print("통과: {}개".format(passed))
+    print("실패: {}개".format(failed))
+    if not failed:
+        print()
+        print("실패 케이스 없음")
+        return
+    print()
+    print("실패 원인 분류: " + ", ".join(
+        "{} {}건".format(category, count) for category, count in categories.items()
+    ))
+    print()
+    print("실패 케이스:")
+    for r in results:
+        if not r.passed:
+            print("- {}: {}".format(r.key, r.reason))
+
+
 def run_json_mode(path=DEFAULT_DATA_PATH):
     """data.json 분석: 필터 로드 → 패턴 분석. 결과 목록을 돌려주고, 파일을 못 읽으면 None."""
     print("데이터 파일: {}".format(path))
@@ -608,7 +640,14 @@ def run_json_mode(path=DEFAULT_DATA_PATH):
         print("{} {} {}".format("✓" if ok else "✗", pad(key, 8), message))
 
     print_section("[2] 패턴 분석 (라벨 정규화 적용)")
-    return analyze_patterns(data.get("patterns"), filters)
+    results = analyze_patterns(data.get("patterns"), filters)
+
+    print_section("[3] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
+    print_performance_table(measure_performance(PERF_SIZES, filters))
+
+    print_section("[4] 결과 요약")
+    print_summary(results)
+    return results
 
 
 # ============================================================
