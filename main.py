@@ -210,12 +210,14 @@ def parse_row(line, n):
     return values
 
 
-def read_matrix(n, title, input_fn=input):
+def read_matrix(n, title, input_fn=None):
     """n줄을 한 줄씩 입력받아 n×n Matrix를 만든다.
 
     잘못된 줄은 안내 문구를 보여주고 그 줄만 다시 입력받는다.
     input_fn은 테스트에서 입력을 흉내 낼 수 있도록 바꿔 끼울 수 있다.
+    생략하면 호출 시점의 내장 input()을 쓴다 (기본값에 input을 고정하지 않음).
     """
+    input_fn = input_fn or input
     print("{} ({}줄 입력, 공백 구분)".format(title, n))
     rows = []
     while len(rows) < n:
@@ -308,7 +310,7 @@ def print_matrix(matrix, indent="  "):
 USER_SIZE = 3
 
 
-def run_user_mode(input_fn=input):
+def run_user_mode(input_fn=None):
     n = USER_SIZE
 
     print_section("[1] 필터 입력")
@@ -559,8 +561,9 @@ def run_json_mode(path=DEFAULT_DATA_PATH):
 # 메뉴 / 진입점
 # ============================================================
 
-def choose_mode(input_fn=input):
+def choose_mode(input_fn=None):
     """모드를 선택받는다. 1 또는 2가 아니면 다시 입력받는다."""
+    input_fn = input_fn or input
     print()
     print("[모드 선택]")
     print("1. 사용자 입력 (3x3)")
