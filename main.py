@@ -427,6 +427,99 @@ def load_filters(section):
     return filters, logs
 
 
+# FAIL 사유 범주 (README의 실패 원인 분석과 대응)
+REASON_SCHEMA = "[스키마]"   # 데이터/스키마 문제: 키 형식, 필드 누락, 필터 없음, input 형식
+REASON_SIZE = "[크기]"       # 데이터/스키마 문제: 패턴과 필터 크기 불일치
+REASON_LABEL = "[라벨]"      # 데이터/스키마 문제: expected 라벨 해석 불가
+REASON_TIE = "[동점]"        # 수치 비교 문제: |Cross-X| < EPSILON
+REASON_MISMATCH = "[판정]"   # 로직(또는 데이터) 문제: 판정과 expected가 다름
+REASON_ERROR = "[예외]"      # 예상하지 못한 오류
+
+
+class CaseResult:
+    """패턴 케이스 하나의 분석 결과."""
+
+    def __init__(self, key):
+        self.key = key
+        self.score_cross = None
+        self.score_x = None
+        self.decision = None
+        self.expected = None
+        self.passed = False
+        self.reason = None
+
+    def fail(self, category, message):
+        self.passed = False
+        self.reason = "{} {}".format(category, message)
+        return self
+
+
+def evaluate_case(key, entry, filters):
+    """패턴 하나를 검증·연산·판정한다. 문제가 있으면 예외 대신 FAIL 결과를 돌려준다."""
+    result = CaseResult(key)
+
+    match = PATTERN_KEY_RE.match(key)
+    if not match:
+        return result.fail(REASON_SCHEMA, "키 형식 오류: size_N_idx 형태가 아닙니다")
+    n = int(match.group(1))
+
+    if not isinstance(entry, dict):
+        return result.fail(REASON_SCHEMA, "케이스 값이 객체가 아닙니다")
+    missing = [field for field in ("input", "expected") if field not in entry]
+    if missing:
+        return result.fail(REASON_SCHEMA, "필드 누락: {}".format(", ".join(missing)))
+
+    raw_expected = entry["expected"]
+    result.expected = normalize_label(raw_expected)
+
+    if n not in filters:
+        return result.fail(REASON_SCHEMA, "size_{} 필터가 없거나 로드에 실패했습니다".format(n))
+
+    try:
+        pattern = Matrix.from_rows(entry["input"])
+    except ValueError as error:
+        return result.fail(REASON_SCHEMA, "input 오류: {}".format(error))
+    if pattern.n != n:
+        return result.fail(
+            REASON_SIZE,
+            "키는 {n}×{n}인데 input은 {m}×{m} (필터 {n}×{n}와 크기 불일치)".format(n=n, m=pattern.n),
+        )
+
+    result.score_cross = mac(pattern, filters[n][CROSS])
+    result.score_x = mac(pattern, filters[n][X])
+    result.decision = judge(result.score_cross, result.score_x, CROSS, X)
+
+    if result.expected is None:
+        return result.fail(REASON_LABEL, "expected 값 {!r}을(를) 해석할 수 없습니다".format(raw_expected))
+    if result.decision == UNDECIDED:
+        return result.fail(
+            REASON_TIE,
+            "|Cross-X| = {:.3g} < {} → UNDECIDED 규칙에 따라 FAIL".format(
+                abs(result.score_cross - result.score_x), format_epsilon()
+            ),
+        )
+    if result.decision != result.expected:
+        return result.fail(
+            REASON_MISMATCH, "판정 {} ≠ expected {}".format(result.decision, result.expected)
+        )
+    result.passed = True
+    return result
+
+
+def print_case(result):
+    print("--- {} ---".format(result.key))
+    if result.score_cross is not None:
+        print("Cross 점수: {}".format(format_score(result.score_cross)))
+        print("X 점수: {}".format(format_score(result.score_x)))
+    print("판정: {} | expected: {} | {}".format(
+        result.decision or "-",
+        result.expected or "-",
+        "PASS" if result.passed else "FAIL",
+    ))
+    if result.reason:
+        print("  사유: {}".format(result.reason))
+
+
 # ============================================================
 # 메뉴 / 진입점
 # ============================================================
