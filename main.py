@@ -4,7 +4,10 @@ MAC(Multiply-Accumulate) 연산으로 N×N 패턴이 Cross(십자가)인지 X인
 외부 라이브러리 없이 Python 표준 라이브러리만 사용한다.
 """
 
+import json
 import math
+import os
+import re
 import sys
 import time
 import unicodedata
@@ -207,12 +210,14 @@ def parse_row(line, n):
     return values
 
 
-def read_matrix(n, title, input_fn=input):
+def read_matrix(n, title, input_fn=None):
     """n줄을 한 줄씩 입력받아 n×n Matrix를 만든다.
 
     잘못된 줄은 안내 문구를 보여주고 그 줄만 다시 입력받는다.
     input_fn은 테스트에서 입력을 흉내 낼 수 있도록 바꿔 끼울 수 있다.
+    생략하면 호출 시점의 내장 input()을 쓴다 (기본값에 input을 고정하지 않음).
     """
+    input_fn = input_fn or input
     print("{} ({}줄 입력, 공백 구분)".format(title, n))
     rows = []
     while len(rows) < n:
@@ -305,7 +310,7 @@ def print_matrix(matrix, indent="  "):
 USER_SIZE = 3
 
 
-def run_user_mode(input_fn=input):
+def run_user_mode(input_fn=None):
     n = USER_SIZE
 
     print_section("[1] 필터 입력")
@@ -347,16 +352,218 @@ def run_user_mode(input_fn=input):
 # 모드 2: data.json 분석
 # ============================================================
 
-def run_json_mode():
-    print("data.json 분석 모드는 아직 구현 중입니다. (4단계)")
+DEFAULT_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+
+FILTER_KEY_RE = re.compile(r"^size_(\d+)$")        # filters 키: size_{N}
+PATTERN_KEY_RE = re.compile(r"^size_(\d+)_(\d+)$")  # patterns 키: size_{N}_{idx}
+
+
+def load_json(path):
+    """JSON 파일을 읽어 (data, 오류 메시지)를 돌려준다. 실패해도 예외를 밖으로 내지 않는다."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None, "파일을 찾을 수 없습니다: {}".format(path)
+    except json.JSONDecodeError as error:
+        return None, "JSON 문법 오류 ({}행 {}열): {}".format(error.lineno, error.colno, error.msg)
+    except (OSError, UnicodeDecodeError) as error:
+        return None, "파일을 읽을 수 없습니다: {}".format(error)
+    if not isinstance(data, dict):
+        return None, "최상위 구조가 객체({{...}})가 아닙니다: {}".format(type(data).__name__)
+    return data, None
+
+
+def load_filters(section):
+    """filters 섹션을 검증해 ({N: {Cross: Matrix, X: Matrix}}, 로그 목록)을 돌려준다.
+
+    로그는 (성공 여부, 키, 메시지) 튜플이다. 문제가 있는 크기는 결과에서 빠지고,
+    그 크기의 패턴은 이후 케이스 단위로 FAIL 처리된다.
+    """
+    filters = {}
+    logs = []
+    if not isinstance(section, dict):
+        logs.append((False, "filters", "filters 항목이 없거나 객체가 아닙니다"))
+        return filters, logs
+
+    for key, pair in section.items():
+        match = FILTER_KEY_RE.match(key)
+        if not match:
+            logs.append((False, key, "키 형식 오류 (size_N 형태가 아님)"))
+            continue
+        n = int(match.group(1))
+        if not isinstance(pair, dict):
+            logs.append((False, key, "필터 묶음이 객체가 아닙니다"))
+            continue
+
+        loaded = {}
+        problems = []
+        for raw_label, rows in pair.items():
+            label = normalize_label(raw_label)
+            if label is None:
+                problems.append("알 수 없는 필터 키 '{}'".format(raw_label))
+                continue
+            if label in loaded:
+                problems.append("'{}' 필터가 중복됨 ('{}')".format(label, raw_label))
+                continue
+            try:
+                matrix = Matrix.from_rows(rows)
+            except ValueError as error:
+                problems.append("{} 필터 오류: {}".format(label, error))
+                continue
+            if matrix.n != n:
+                problems.append(
+                    "{} 필터 크기 불일치: 키는 {n}×{n}인데 데이터는 {m}×{m}".format(label, n=n, m=matrix.n)
+                )
+                continue
+            loaded[label] = matrix
+
+        for label in (CROSS, X):
+            if label not in loaded and not any(p.startswith(label + " ") for p in problems):
+                problems.append("{} 필터 없음".format(label))
+        if problems:
+            logs.append((False, key, "; ".join(problems)))
+        else:
+            filters[n] = loaded
+            logs.append((True, key, "필터 로드 완료 (Cross, X)"))
+    return filters, logs
+
+
+# FAIL 사유 범주 (README의 실패 원인 분석과 대응)
+REASON_SCHEMA = "[스키마]"   # 데이터/스키마 문제: 키 형식, 필드 누락, 필터 없음, input 형식
+REASON_SIZE = "[크기]"       # 데이터/스키마 문제: 패턴과 필터 크기 불일치
+REASON_LABEL = "[라벨]"      # 데이터/스키마 문제: expected 라벨 해석 불가
+REASON_TIE = "[동점]"        # 수치 비교 문제: |Cross-X| < EPSILON
+REASON_MISMATCH = "[판정]"   # 로직(또는 데이터) 문제: 판정과 expected가 다름
+REASON_ERROR = "[예외]"      # 예상하지 못한 오류
+
+
+class CaseResult:
+    """패턴 케이스 하나의 분석 결과."""
+
+    def __init__(self, key):
+        self.key = key
+        self.score_cross = None
+        self.score_x = None
+        self.decision = None
+        self.expected = None
+        self.passed = False
+        self.reason = None
+
+    def fail(self, category, message):
+        self.passed = False
+        self.reason = "{} {}".format(category, message)
+        return self
+
+
+def evaluate_case(key, entry, filters):
+    """패턴 하나를 검증·연산·판정한다. 문제가 있으면 예외 대신 FAIL 결과를 돌려준다."""
+    result = CaseResult(key)
+
+    match = PATTERN_KEY_RE.match(key)
+    if not match:
+        return result.fail(REASON_SCHEMA, "키 형식 오류: size_N_idx 형태가 아닙니다")
+    n = int(match.group(1))
+
+    if not isinstance(entry, dict):
+        return result.fail(REASON_SCHEMA, "케이스 값이 객체가 아닙니다")
+    missing = [field for field in ("input", "expected") if field not in entry]
+    if missing:
+        return result.fail(REASON_SCHEMA, "필드 누락: {}".format(", ".join(missing)))
+
+    raw_expected = entry["expected"]
+    result.expected = normalize_label(raw_expected)
+
+    if n not in filters:
+        return result.fail(REASON_SCHEMA, "size_{} 필터가 없거나 로드에 실패했습니다".format(n))
+
+    try:
+        pattern = Matrix.from_rows(entry["input"])
+    except ValueError as error:
+        return result.fail(REASON_SCHEMA, "input 오류: {}".format(error))
+    if pattern.n != n:
+        return result.fail(
+            REASON_SIZE,
+            "키는 {n}×{n}인데 input은 {m}×{m} (필터 {n}×{n}와 크기 불일치)".format(n=n, m=pattern.n),
+        )
+
+    result.score_cross = mac(pattern, filters[n][CROSS])
+    result.score_x = mac(pattern, filters[n][X])
+    result.decision = judge(result.score_cross, result.score_x, CROSS, X)
+
+    if result.expected is None:
+        return result.fail(REASON_LABEL, "expected 값 {!r}을(를) 해석할 수 없습니다".format(raw_expected))
+    if result.decision == UNDECIDED:
+        return result.fail(
+            REASON_TIE,
+            "|Cross-X| = {:.3g} < {} → UNDECIDED 규칙에 따라 FAIL".format(
+                abs(result.score_cross - result.score_x), format_epsilon()
+            ),
+        )
+    if result.decision != result.expected:
+        return result.fail(
+            REASON_MISMATCH, "판정 {} ≠ expected {}".format(result.decision, result.expected)
+        )
+    result.passed = True
+    return result
+
+
+def print_case(result):
+    print("--- {} ---".format(result.key))
+    if result.score_cross is not None:
+        print("Cross 점수: {}".format(format_score(result.score_cross)))
+        print("X 점수: {}".format(format_score(result.score_x)))
+    print("판정: {} | expected: {} | {}".format(
+        result.decision or "-",
+        result.expected or "-",
+        "PASS" if result.passed else "FAIL",
+    ))
+    if result.reason:
+        print("  사유: {}".format(result.reason))
+
+
+def analyze_patterns(section, filters):
+    """patterns 섹션의 모든 케이스를 판정한다. 한 케이스의 오류가 전체를 멈추지 않는다."""
+    results = []
+    if not isinstance(section, dict):
+        print("patterns 항목이 없거나 객체가 아닙니다. 분석할 케이스가 없습니다.")
+        return results
+    for key, entry in section.items():
+        try:
+            result = evaluate_case(key, entry, filters)
+        except Exception as error:  # 예상하지 못한 오류도 케이스 단위 FAIL로 처리
+            result = CaseResult(key).fail(
+                REASON_ERROR, "{}: {}".format(type(error).__name__, error)
+            )
+        print_case(result)
+        results.append(result)
+    return results
+
+
+def run_json_mode(path=DEFAULT_DATA_PATH):
+    """data.json 분석: 필터 로드 → 패턴 분석. 결과 목록을 돌려주고, 파일을 못 읽으면 None."""
+    print("데이터 파일: {}".format(path))
+    data, error = load_json(path)
+    if error:
+        print("✗ 데이터를 불러오지 못했습니다: {}".format(error))
+        return None
+
+    print_section("[1] 필터 로드")
+    filters, logs = load_filters(data.get("filters"))
+    for ok, key, message in logs:
+        print("{} {} {}".format("✓" if ok else "✗", pad(key, 8), message))
+
+    print_section("[2] 패턴 분석 (라벨 정규화 적용)")
+    return analyze_patterns(data.get("patterns"), filters)
 
 
 # ============================================================
 # 메뉴 / 진입점
 # ============================================================
 
-def choose_mode(input_fn=input):
+def choose_mode(input_fn=None):
     """모드를 선택받는다. 1 또는 2가 아니면 다시 입력받는다."""
+    input_fn = input_fn or input
     print()
     print("[모드 선택]")
     print("1. 사용자 입력 (3x3)")
@@ -377,14 +584,18 @@ def configure_output():
             pass
 
 
-def main():
+def main(argv=None):
+    """사용법: python main.py [데이터 파일 경로]  (기본값: main.py 옆의 data.json)"""
     configure_output()
+    argv = sys.argv[1:] if argv is None else argv
+    data_path = argv[0] if argv else DEFAULT_DATA_PATH
+
     print("=== Mini NPU Simulator ===")
     try:
         if choose_mode() == "1":
             run_user_mode()
-        else:
-            run_json_mode()
+        elif run_json_mode(data_path) is None:
+            return 1
     except (EOFError, KeyboardInterrupt):
         print()
         print("입력이 종료되어 프로그램을 마칩니다.")
