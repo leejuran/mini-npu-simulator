@@ -166,3 +166,54 @@ def judge(score_a, score_b, label_a, label_b, epsilon=EPSILON):
     if is_tie(score_a, score_b, epsilon):
         return UNDECIDED
     return label_a if score_a > score_b else label_b
+
+
+# ============================================================
+# 콘솔 입력 처리 (모드 1)
+# ============================================================
+
+def parse_row(line, n):
+    """한 줄 문자열을 공백으로 나눠 숫자 n개의 리스트로 바꾼다.
+
+    개수가 맞지 않거나 숫자로 해석할 수 없으면 안내 문구를 담은 ValueError를 낸다.
+    """
+    tokens = line.split()
+    if len(tokens) != n:
+        raise ValueError(
+            "입력 형식 오류: 각 줄에 {}개의 숫자를 공백으로 구분해 입력하세요. "
+            "(입력된 값 {}개)".format(n, len(tokens))
+        )
+    values = []
+    for token in tokens:
+        try:
+            number = float(token)
+        except ValueError:
+            raise ValueError(
+                "입력 형식 오류: '{}'은(는) 숫자가 아닙니다. "
+                "각 줄에 {}개의 숫자를 공백으로 구분해 입력하세요.".format(token, n)
+            )
+        if not math.isfinite(number):
+            raise ValueError(
+                "입력 형식 오류: '{}'은(는) 사용할 수 없는 값입니다. "
+                "유한한 숫자를 입력하세요.".format(token)
+            )
+        values.append(number)
+    return values
+
+
+def read_matrix(n, title, input_fn=input):
+    """n줄을 한 줄씩 입력받아 n×n Matrix를 만든다.
+
+    잘못된 줄은 안내 문구를 보여주고 그 줄만 다시 입력받는다.
+    input_fn은 테스트에서 입력을 흉내 낼 수 있도록 바꿔 끼울 수 있다.
+    """
+    print("{} ({}줄 입력, 공백 구분)".format(title, n))
+    rows = []
+    while len(rows) < n:
+        line = input_fn()
+        try:
+            rows.append(parse_row(line, n))
+        except ValueError as error:
+            print("  {}".format(error))
+            print("  → {}번째 줄을 다시 입력하세요.".format(len(rows) + 1))
+    return Matrix.from_rows(rows)
