@@ -181,5 +181,95 @@ class DataJsonScoreTest(unittest.TestCase):
                 self.assertEqual(main.normalize_label(entry["expected"]), want_expected)
 
 
+def fake_input(lines):
+    """input()을 대신해 미리 정한 줄을 차례로 돌려준다. 다 쓰면 EOFError."""
+    iterator = iter(lines)
+
+    def _input(prompt=""):
+        try:
+            return next(iterator)
+        except StopIteration:
+            raise EOFError
+    return _input
+
+
+def run_quietly(func, *args):
+    """함수를 실행하고 (반환값, 출력 문자열)을 돌려준다."""
+    import contextlib
+    import io
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        result = func(*args)
+    return result, buffer.getvalue()
+
+
+class ParseRowTest(unittest.TestCase):
+    def test_valid_row(self):
+        self.assertEqual(main.parse_row("0 1 0", 3), [0.0, 1.0, 0.0])
+        self.assertEqual(main.parse_row("  0.5\t-1   2 ", 3), [0.5, -1.0, 2.0])
+
+    def test_wrong_count(self):
+        for line in ("", "0 1", "0 1 0 1", "0,1,0"):
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(ValueError, "각 줄에 3개의 숫자를 공백으로 구분해"):
+                    main.parse_row(line, 3)
+
+    def test_not_a_number(self):
+        for line in ("0 a 0", "0 nan 0", "inf 0 0"):
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(ValueError, "입력 형식 오류"):
+                    main.parse_row(line, 3)
+
+
+class ReadMatrixTest(unittest.TestCase):
+    def test_retries_only_bad_lines(self):
+        lines = ["0 1 0", "1 1", "x 1 1", "1 1 1", "0 1 0"]
+        matrix, output = run_quietly(main.read_matrix, 3, "패턴", fake_input(lines))
+        self.assertEqual(matrix.to_rows(), [[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+        self.assertEqual(output.count("2번째 줄을 다시 입력하세요"), 2)
+
+    def test_eof_propagates(self):
+        with self.assertRaises(EOFError):
+            run_quietly(main.read_matrix, 3, "패턴", fake_input(["0 1 0"]))
+
+
+class ChooseModeTest(unittest.TestCase):
+    def test_retries_until_valid(self):
+        choice, output = run_quietly(main.choose_mode, fake_input(["3", "", " 2 "]))
+        self.assertEqual(choice, "2")
+        self.assertEqual(output.count("1 또는 2를 입력하세요"), 2)
+
+
+class UserModeTest(unittest.TestCase):
+    CROSS_3 = ["0 1 0", "1 1 1", "0 1 0"]
+    X_3 = ["1 0 1", "0 1 0", "1 0 1"]
+
+    def test_mission_example(self):
+        lines = self.CROSS_3 + self.X_3 + self.X_3
+        decision, output = run_quietly(main.run_user_mode, fake_input(lines))
+        self.assertEqual(decision, "B")
+        self.assertIn("A 점수: 1.0", output)
+        self.assertIn("B 점수: 5.0", output)
+        self.assertIn("판정: B", output)
+        self.assertIn("3×3", output)
+
+    def test_floating_point_tie_is_undecided(self):
+        lines = ["0 0.1 0", "0 0.2 0", "0 0 0",
+                 "0.3 0 0", "0 0 0", "0 0 0",
+                 "1 1 1", "1 1 1", "1 1 1"]
+        decision, output = run_quietly(main.run_user_mode, fake_input(lines))
+        self.assertEqual(decision, main.UNDECIDED)
+        self.assertIn("A 점수: 0.30000000000000004", output)
+        self.assertIn("판정 불가 (|A-B| < 1e-9)", output)
+
+
+class MeasureTest(unittest.TestCase):
+    def test_calls_warmup_plus_repeat(self):
+        calls = []
+        avg = main.measure_average_ms(lambda: calls.append(1), repeat=10)
+        self.assertEqual(len(calls), 11)
+        self.assertGreaterEqual(avg, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

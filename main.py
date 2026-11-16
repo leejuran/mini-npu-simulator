@@ -5,6 +5,9 @@ MAC(Multiply-Accumulate) 연산으로 N×N 패턴이 Cross(십자가)인지 X인
 """
 
 import math
+import sys
+import time
+import unicodedata
 
 
 # ============================================================
@@ -17,6 +20,9 @@ UNDECIDED = "UNDECIDED"
 
 # 점수 비교 허용오차: |A - B| < EPSILON 이면 동점(UNDECIDED)으로 본다.
 EPSILON = 1e-9
+
+# 성능 측정 반복 횟수 (과제 최소 기준: 10회)
+REPEAT = 10
 
 
 # ============================================================
@@ -166,3 +172,225 @@ def judge(score_a, score_b, label_a, label_b, epsilon=EPSILON):
     if is_tie(score_a, score_b, epsilon):
         return UNDECIDED
     return label_a if score_a > score_b else label_b
+
+
+# ============================================================
+# 콘솔 입력 처리 (모드 1)
+# ============================================================
+
+def parse_row(line, n):
+    """한 줄 문자열을 공백으로 나눠 숫자 n개의 리스트로 바꾼다.
+
+    개수가 맞지 않거나 숫자로 해석할 수 없으면 안내 문구를 담은 ValueError를 낸다.
+    """
+    tokens = line.split()
+    if len(tokens) != n:
+        raise ValueError(
+            "입력 형식 오류: 각 줄에 {}개의 숫자를 공백으로 구분해 입력하세요. "
+            "(입력된 값 {}개)".format(n, len(tokens))
+        )
+    values = []
+    for token in tokens:
+        try:
+            number = float(token)
+        except ValueError:
+            raise ValueError(
+                "입력 형식 오류: '{}'은(는) 숫자가 아닙니다. "
+                "각 줄에 {}개의 숫자를 공백으로 구분해 입력하세요.".format(token, n)
+            )
+        if not math.isfinite(number):
+            raise ValueError(
+                "입력 형식 오류: '{}'은(는) 사용할 수 없는 값입니다. "
+                "유한한 숫자를 입력하세요.".format(token)
+            )
+        values.append(number)
+    return values
+
+
+def read_matrix(n, title, input_fn=input):
+    """n줄을 한 줄씩 입력받아 n×n Matrix를 만든다.
+
+    잘못된 줄은 안내 문구를 보여주고 그 줄만 다시 입력받는다.
+    input_fn은 테스트에서 입력을 흉내 낼 수 있도록 바꿔 끼울 수 있다.
+    """
+    print("{} ({}줄 입력, 공백 구분)".format(title, n))
+    rows = []
+    while len(rows) < n:
+        line = input_fn()
+        try:
+            rows.append(parse_row(line, n))
+        except ValueError as error:
+            print("  {}".format(error))
+            print("  → {}번째 줄을 다시 입력하세요.".format(len(rows) + 1))
+    return Matrix.from_rows(rows)
+
+
+# ============================================================
+# 성능 측정
+# ============================================================
+
+def measure_average_ms(func, repeat=REPEAT):
+    """func()를 repeat번 호출해 1회 평균 시간(ms)을 돌려준다.
+
+    입출력은 측정 구간 밖에 두고, 함수 호출 구간만 time.perf_counter로 잰다.
+    첫 호출은 캐시·지연 초기화 영향을 줄이기 위한 예열로 측정에서 제외한다.
+    """
+    func()  # 예열 (측정 제외)
+    total = 0.0
+    for _ in range(repeat):
+        start = time.perf_counter()
+        func()
+        total += time.perf_counter() - start
+    return total / repeat * 1000.0
+
+
+def print_performance_table(rows):
+    """rows: (n, 평균 ms) 목록. 크기 / 평균 시간 / 연산 횟수(N²) 표를 출력한다."""
+    print(pad("크기", 10) + pad("평균 시간(ms)", 16, right=True) + pad("연산 횟수(N²)", 16, right=True))
+    print("-" * 42)
+    for n, avg_ms in rows:
+        print(
+            pad("{0}×{0}".format(n), 10)
+            + pad("{:.6f}".format(avg_ms), 16, right=True)
+            + pad(str(n * n), 16, right=True)
+        )
+
+
+# ============================================================
+# 출력 유틸
+# ============================================================
+
+def display_width(text):
+    """콘솔 표시 폭. 한글 등 전각 문자는 2칸으로 센다."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def pad(text, width, right=False):
+    """표시 폭 기준으로 공백을 채운다 (한글이 섞여도 표 열이 맞도록)."""
+    space = " " * max(0, width - display_width(text))
+    return space + text if right else text + space
+
+
+def print_section(title):
+    print()
+    print("#" + "-" * 40)
+    print("# " + title)
+    print("#" + "-" * 40)
+
+
+def format_score(score):
+    """점수를 repr로 출력해 부동소수점 오차(예: 0.8999999999999999)를 숨기지 않는다."""
+    return repr(score)
+
+
+def format_epsilon():
+    """EPSILON을 1e-9 형태로 표시한다 (기본 형식은 1e-09)."""
+    return "{:g}".format(EPSILON).replace("e-0", "e-")
+
+
+def format_value(value):
+    """행렬 값 표시용: 정수 값은 0, 1처럼, 아니면 그대로 보여준다."""
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def print_matrix(matrix, indent="  "):
+    for row in matrix.cells:
+        print(indent + " ".join(format_value(v) for v in row))
+
+
+# ============================================================
+# 모드 1: 사용자 입력 (3×3)
+# ============================================================
+
+USER_SIZE = 3
+
+
+def run_user_mode(input_fn=input):
+    n = USER_SIZE
+
+    print_section("[1] 필터 입력")
+    filter_a = read_matrix(n, "필터 A", input_fn)
+    print()
+    filter_b = read_matrix(n, "필터 B", input_fn)
+
+    print_section("[2] 저장 확인")
+    print("필터 A ({0}×{0})".format(n))
+    print_matrix(filter_a)
+    print("필터 B ({0}×{0})".format(n))
+    print_matrix(filter_b)
+
+    print_section("[3] 패턴 입력")
+    pattern = read_matrix(n, "패턴", input_fn)
+
+    # 연산: 점수 계산과 시간 측정 (출력은 측정 구간 밖)
+    score_a = mac(pattern, filter_a)
+    score_b = mac(pattern, filter_b)
+    pair_ms = measure_average_ms(lambda: (mac(pattern, filter_a), mac(pattern, filter_b)))
+    single_ms = measure_average_ms(lambda: mac(pattern, filter_a))
+    decision = judge(score_a, score_b, "A", "B")
+
+    print_section("[4] MAC 결과")
+    print("A 점수: {}".format(format_score(score_a)))
+    print("B 점수: {}".format(format_score(score_b)))
+    print("연산 시간(A·B 두 필터, 평균/{}회): {:.6f} ms".format(REPEAT, pair_ms))
+    if decision == UNDECIDED:
+        print("판정: 판정 불가 (|A-B| < {})".format(format_epsilon()))
+    else:
+        print("판정: {}".format(decision))
+
+    print_section("[5] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
+    print_performance_table([(n, single_ms)])
+    return decision
+
+
+# ============================================================
+# 모드 2: data.json 분석
+# ============================================================
+
+def run_json_mode():
+    print("data.json 분석 모드는 아직 구현 중입니다. (4단계)")
+
+
+# ============================================================
+# 메뉴 / 진입점
+# ============================================================
+
+def choose_mode(input_fn=input):
+    """모드를 선택받는다. 1 또는 2가 아니면 다시 입력받는다."""
+    print()
+    print("[모드 선택]")
+    print("1. 사용자 입력 (3x3)")
+    print("2. data.json 분석")
+    while True:
+        choice = input_fn("선택: ").strip()
+        if choice in ("1", "2"):
+            return choice
+        print("  1 또는 2를 입력하세요.")
+
+
+def configure_output():
+    """Windows 콘솔·파이프에서도 한글이 깨지지 않도록 출력 인코딩을 UTF-8로 맞춘다."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def main():
+    configure_output()
+    print("=== Mini NPU Simulator ===")
+    try:
+        if choose_mode() == "1":
+            run_user_mode()
+        else:
+            run_json_mode()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print("입력이 종료되어 프로그램을 마칩니다.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
