@@ -16,7 +16,7 @@ NPU가 하드웨어로 병렬 처리하는 곱셈·누적 연산을 반복문으
 python main.py
 ```
 
-실행하면 모드를 고릅니다. 1 또는 2가 아니면 다시 입력받습니다.
+실행하면 모드를 고릅니다. 1~3이 아니면 다시 입력받습니다.
 
 ```
 === Mini NPU Simulator ===
@@ -24,13 +24,15 @@ python main.py
 [모드 선택]
 1. 사용자 입력 (3x3)
 2. data.json 분석
+3. 패턴 생성기 (보너스)
 선택:
 ```
 
 | 모드 | 흐름 |
 |---|---|
 | 1. 사용자 입력 (3×3) | 필터 A 입력 → 필터 B 입력 → 저장 확인 → 패턴 입력 → MAC 결과·판정 → 성능 분석(3×3) |
-| 2. data.json 분석 | 필터 로드 → 패턴 분석(PASS/FAIL) → 성능 분석(3×3, 5×5, 13×13, 25×25) → 결과 요약 |
+| 2. data.json 분석 | 필터 로드 → 패턴 분석(PASS/FAIL) → 성능 분석(3×3, 5×5, 13×13, 25×25, 보너스 2D/1D 비교 포함) → 결과 요약 |
+| 3. 패턴 생성기 (보너스) | 크기 N 입력(3~99) → Cross/X 자동 생성 → 생성 패턴으로 MAC 판정 → 해당 크기 성능 분석·2D/1D 비교 |
 
 - 모드 1은 한 줄에 숫자 3개를 공백으로 구분해 입력합니다. 개수가 틀리거나 숫자가 아니면 안내 문구를 보여주고 **그 줄만** 다시 입력받습니다.
 - 입력 도중 `Ctrl+Z`(Windows) / `Ctrl+D`(macOS·Linux)나 `Ctrl+C`를 누르면 안내 후 종료합니다.
@@ -52,6 +54,7 @@ python main.py samples/error_cases.json
 | `python main.py < samples/mode1_tie.txt` | 부동소수점 동점: 0.30000000000000004 vs 0.3 → 판정 불가 |
 | `python main.py < samples/mode1_invalid.txt` | 메뉴·개수·숫자 형식 오류 → 안내 후 재입력 |
 | `python main.py samples/error_cases.json` 후 `2` | 스키마·크기·라벨 오류 케이스 단위 FAIL, 프로그램은 끝까지 실행 |
+| `python main.py` 후 `3`, `13` | 13×13 Cross/X 생성 → 판정 PASS 2건 → 2D/1D 성능 비교 |
 
 ### 4. 테스트
 
@@ -59,7 +62,7 @@ python main.py samples/error_cases.json
 python -m unittest discover -s tests -v
 ```
 
-표준 라이브러리 `unittest`로 작성한 56개 테스트가 있습니다.
+표준 라이브러리 `unittest`로 작성한 64개 테스트가 있습니다.
 
 ---
 
@@ -76,20 +79,20 @@ mini-npu-simulator/
 │   ├── mode1_invalid.txt    # 모드 1 잘못된 입력 → 재입력
 │   └── error_cases.json     # 모드 2 의도적 오류 케이스 (필터 4종, 패턴 14건)
 └── tests/
-    └── test_main.py         # 단위·통합 테스트 56개
+    └── test_main.py         # 단위·통합 테스트 64개
 ```
 
 `main.py` 내부 구성:
 
 | 구역 | 주요 함수 / 클래스 |
 |---|---|
-| 데이터 구조 | `Matrix` (`get`, `set`, `from_rows`, `to_rows`) |
-| MAC 연산 | `mac(pattern, filt)` |
+| 데이터 구조 | `Matrix` (`get`, `set`, `from_rows`, `to_rows`, `flatten`) |
+| MAC 연산 | `mac(pattern, filt)`, 보너스 `mac_flat(a, b)` |
 | 라벨 정규화 | `normalize_label(raw)` |
 | 판정 | `is_tie`, `judge` (epsilon 비교) |
 | 모드 1 입력 | `parse_row`, `read_matrix`, `run_user_mode` |
-| 성능 측정 | `measure_average_ms`, `measure_performance`, `print_performance_table` |
-| 패턴 생성기 | `generate_cross(n)`, `generate_x(n)` |
+| 성능 측정 | `measure_average_ms`, `measure_performance`, `print_performance_table`, 보너스 `measure_comparison`, `print_comparison_table` |
+| 패턴 생성기 | `generate_cross(n)`, `generate_x(n)`, 보너스 모드 `read_size`, `run_generator_mode` |
 | 모드 2 | `load_json`, `load_filters`, `evaluate_case`, `analyze_patterns`, `run_json_mode` |
 | 결과 요약 | `summarize`, `print_summary` |
 | 진입점 | `choose_mode`, `main` |
@@ -239,6 +242,65 @@ else: 점수가 높은 쪽
 
 ---
 
+## 보너스 과제
+
+### B1. 시뮬레이터 최적화 (메모리 접근: 2차원 → 1차원)
+
+`Matrix.flatten()`이 N×N 행렬을 행 우선 순서의 1차원 리스트(길이 N²)로 펼치고, `mac_flat()`이 반복문 한 겹으로 MAC을 계산합니다. `(row, col)` 위치는 1차원에서 `row * N + col`이 됩니다.
+
+```python
+# 최적화 전 (2D): 반복문 두 겹, 원소마다 a[i] → [j] 두 번 인덱싱
+for i in range(n):
+    for j in range(n):
+        total += a[i][j] * b[i][j]
+
+# 최적화 후 (1D): 반복문 한 겹, 원소마다 인덱싱 한 번
+for k in range(n * n):
+    total += a[k] * b[k]
+```
+
+- 더하는 순서가 같으므로 결과도 **비트 단위로 같습니다**. data.json의 동점 케이스(`0.8999999999999999` 등)까지 모두 같은 값이 나오는 것을 테스트로 확인했습니다.
+- 연산 횟수는 그대로 N²이므로 **시간 복잡도는 O(N²) 그대로**이고, 줄어드는 것은 원소당 상수 비용입니다.
+
+**최적화 전/후 비교** (같은 입력, 같은 반복 횟수 10회, 모드 2 [3] 성능 분석에서 출력)
+
+| 크기 | 2D(ms) | 1D(ms) | 속도 향상 | 변환(ms) |
+|---|---|---|---|---|
+| 3×3 | 0.000720 | 0.000500 | 1.44배 | 0.000610 |
+| 5×5 | 0.001320 | 0.000830 | 1.59배 | 0.001020 |
+| 13×13 | 0.005630 | 0.003890 | 1.45배 | 0.004490 |
+| 25×25 | 0.019970 | 0.016890 | 1.18배 | 0.013350 |
+
+세 번 실행했을 때 3×3~13×13은 **1.4~1.7배**로 안정적이었고, 25×25는 **1.02~1.31배**로 편차가 컸습니다.
+
+**해석**
+1. **작은 크기에서 효과가 큰 이유:** 2차원 버전은 바깥 반복마다 안쪽 `range(n)`을 새로 만들고 행 리스트를 꺼내는 비용이 N번 생깁니다. N이 작을수록 이 반복문 관리 비용이 전체에서 차지하는 비율이 커서, 한 겹으로 줄였을 때의 이득이 크게 보입니다.
+2. **큰 크기에서 효과가 줄어드는 이유:** N이 커지면 곱셈·덧셈 자체와 반복 한 번의 인터프리터 비용이 시간을 대부분 차지합니다. 1차원으로 바꿔도 이 비용은 그대로라, 25×25에서는 개선 폭이 작고 측정 잡음에 묻히기도 합니다.
+3. **변환 비용:** 2차원을 1차원으로 펼치는 비용(변환 열)은 MAC 한 번과 비슷합니다. 따라서 **매번 변환한 뒤 계산하면 이득이 사라집니다.** 같은 필터를 여러 패턴에 반복해서 쓸 때 필터를 미리 한 번만 펼쳐 두거나, 처음부터 1차원으로 저장해야 효과가 있습니다. 실제 NPU도 가중치(필터)를 연속된 메모리에 미리 배치해 두고 MAC 유닛으로 흘려보냅니다.
+4. **Python과 하드웨어의 차이:** Python 리스트는 float 객체를 가리키는 포인터 배열이라, 여기서 얻은 이득은 주로 **인터프리터 명령 수가 줄어든 효과**입니다. C 배열이나 NPU 메모리처럼 값이 연속으로 놓이는 환경에서는 1차원 배치가 캐시 적중률과 메모리 대역폭 활용까지 높여 효과가 더 커집니다.
+
+### B2. 패턴 생성기
+
+- `generate_cross(n)`: 가운데 행과 가운데 열이 1인 십자가 (짝수 N은 가운데 두 줄)
+- `generate_x(n)`: 두 대각선이 1인 X
+- **재활용 1 (성능 분석):** 모드 2의 크기별 성능 측정 입력으로 생성 패턴을 씁니다. data.json에 없는 3×3 필터도 생성기로 만듭니다.
+- **재활용 2 (모드 3):** 크기 N(3~99, 잘못 입력하면 재입력)을 받아 Cross/X를 생성하고, 25×25 이하이면 화면에 출력합니다. 생성한 두 패턴을 필터로도 써서 모드 1·2와 같은 `mac`/`judge`로 판정하고, 해당 크기의 성능 분석과 2D/1D 비교를 출력합니다.
+
+```
+--- generated_cross_4 ---
+Cross 점수: 12.0
+X 점수: 4.0
+판정: Cross | expected: Cross | PASS
+--- generated_x_4 ---
+Cross 점수: 4.0
+X 점수: 8.0
+판정: X | expected: X | PASS
+```
+
+N=3, 4(짝수), 25, 51(출력 생략)에서 모두 PASS인 것을 테스트로 확인했습니다. N이 2 이하이면 십자가와 X가 같은 칸을 채워 구별할 수 없으므로 최소 크기를 3으로 정했습니다.
+
+---
+
 ## Git 작업 흐름
 
 단계마다 `feature/*`(문서는 `docs/*`) 브랜치에서 작업하고 `--no-ff`로 `main`에 병합했습니다. 커밋 메시지는 Conventional Commits(`feat`, `fix`, `test`, `docs`, `chore`) 형식입니다.
@@ -252,3 +314,6 @@ else: 점수가 높은 쪽
 | 4 | `feature/mode2` | data.json 로드·검증·케이스 판정 |
 | 5 | `feature/perf-report` | 크기별 성능 분석, 결과 요약, 패턴 생성기 |
 | 6 | `docs/readme` | README 작성 |
+| 7 | `feature/bonus` | 1차원 배열 최적화와 비교, 패턴 생성기 모드 |
+
+최종 버전은 `v1.0.0` 태그로 표시했습니다.
