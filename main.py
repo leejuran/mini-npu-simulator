@@ -283,6 +283,11 @@ def format_score(score):
     return repr(score)
 
 
+def format_epsilon():
+    """EPSILON을 1e-9 형태로 표시한다 (기본 형식은 1e-09)."""
+    return "{:g}".format(EPSILON).replace("e-0", "e-")
+
+
 def format_value(value):
     """행렬 값 표시용: 정수 값은 0, 1처럼, 아니면 그대로 보여준다."""
     return str(int(value)) if value.is_integer() else repr(value)
@@ -329,7 +334,7 @@ def run_user_mode(input_fn=input):
     print("B 점수: {}".format(format_score(score_b)))
     print("연산 시간(A·B 두 필터, 평균/{}회): {:.6f} ms".format(REPEAT, pair_ms))
     if decision == UNDECIDED:
-        print("판정: 판정 불가 (|A-B| < {:g})".format(EPSILON))
+        print("판정: 판정 불가 (|A-B| < {})".format(format_epsilon()))
     else:
         print("판정: {}".format(decision))
 
