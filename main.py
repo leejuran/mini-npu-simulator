@@ -5,6 +5,9 @@ MAC(Multiply-Accumulate) 연산으로 N×N 패턴이 Cross(십자가)인지 X인
 """
 
 import math
+import sys
+import time
+import unicodedata
 
 
 # ============================================================
@@ -17,6 +20,9 @@ UNDECIDED = "UNDECIDED"
 
 # 점수 비교 허용오차: |A - B| < EPSILON 이면 동점(UNDECIDED)으로 본다.
 EPSILON = 1e-9
+
+# 성능 측정 반복 횟수 (과제 최소 기준: 10회)
+REPEAT = 10
 
 
 # ============================================================
@@ -217,3 +223,116 @@ def read_matrix(n, title, input_fn=input):
             print("  {}".format(error))
             print("  → {}번째 줄을 다시 입력하세요.".format(len(rows) + 1))
     return Matrix.from_rows(rows)
+
+
+# ============================================================
+# 성능 측정
+# ============================================================
+
+def measure_average_ms(func, repeat=REPEAT):
+    """func()를 repeat번 호출해 1회 평균 시간(ms)을 돌려준다.
+
+    입출력은 측정 구간 밖에 두고, 함수 호출 구간만 time.perf_counter로 잰다.
+    첫 호출은 캐시·지연 초기화 영향을 줄이기 위한 예열로 측정에서 제외한다.
+    """
+    func()  # 예열 (측정 제외)
+    total = 0.0
+    for _ in range(repeat):
+        start = time.perf_counter()
+        func()
+        total += time.perf_counter() - start
+    return total / repeat * 1000.0
+
+
+def print_performance_table(rows):
+    """rows: (n, 평균 ms) 목록. 크기 / 평균 시간 / 연산 횟수(N²) 표를 출력한다."""
+    print(pad("크기", 10) + pad("평균 시간(ms)", 16, right=True) + pad("연산 횟수(N²)", 16, right=True))
+    print("-" * 42)
+    for n, avg_ms in rows:
+        print(
+            pad("{0}×{0}".format(n), 10)
+            + pad("{:.6f}".format(avg_ms), 16, right=True)
+            + pad(str(n * n), 16, right=True)
+        )
+
+
+# ============================================================
+# 출력 유틸
+# ============================================================
+
+def display_width(text):
+    """콘솔 표시 폭. 한글 등 전각 문자는 2칸으로 센다."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def pad(text, width, right=False):
+    """표시 폭 기준으로 공백을 채운다 (한글이 섞여도 표 열이 맞도록)."""
+    space = " " * max(0, width - display_width(text))
+    return space + text if right else text + space
+
+
+def print_section(title):
+    print()
+    print("#" + "-" * 40)
+    print("# " + title)
+    print("#" + "-" * 40)
+
+
+def format_score(score):
+    """점수를 repr로 출력해 부동소수점 오차(예: 0.8999999999999999)를 숨기지 않는다."""
+    return repr(score)
+
+
+def format_value(value):
+    """행렬 값 표시용: 정수 값은 0, 1처럼, 아니면 그대로 보여준다."""
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def print_matrix(matrix, indent="  "):
+    for row in matrix.cells:
+        print(indent + " ".join(format_value(v) for v in row))
+
+
+# ============================================================
+# 모드 1: 사용자 입력 (3×3)
+# ============================================================
+
+USER_SIZE = 3
+
+
+def run_user_mode(input_fn=input):
+    n = USER_SIZE
+
+    print_section("[1] 필터 입력")
+    filter_a = read_matrix(n, "필터 A", input_fn)
+    print()
+    filter_b = read_matrix(n, "필터 B", input_fn)
+
+    print_section("[2] 저장 확인")
+    print("필터 A ({0}×{0})".format(n))
+    print_matrix(filter_a)
+    print("필터 B ({0}×{0})".format(n))
+    print_matrix(filter_b)
+
+    print_section("[3] 패턴 입력")
+    pattern = read_matrix(n, "패턴", input_fn)
+
+    # 연산: 점수 계산과 시간 측정 (출력은 측정 구간 밖)
+    score_a = mac(pattern, filter_a)
+    score_b = mac(pattern, filter_b)
+    pair_ms = measure_average_ms(lambda: (mac(pattern, filter_a), mac(pattern, filter_b)))
+    single_ms = measure_average_ms(lambda: mac(pattern, filter_a))
+    decision = judge(score_a, score_b, "A", "B")
+
+    print_section("[4] MAC 결과")
+    print("A 점수: {}".format(format_score(score_a)))
+    print("B 점수: {}".format(format_score(score_b)))
+    print("연산 시간(A·B 두 필터, 평균/{}회): {:.6f} ms".format(REPEAT, pair_ms))
+    if decision == UNDECIDED:
+        print("판정: 판정 불가 (|A-B| < {:g})".format(EPSILON))
+    else:
+        print("판정: {}".format(decision))
+
+    print_section("[5] 성능 분석 (MAC 1회, 평균/{}회)".format(REPEAT))
+    print_performance_table([(n, single_ms)])
+    return decision
